@@ -1,0 +1,13 @@
+target_sources(
+        cpustatslib
+        PRIVATE
+        cpu_manager.hpp
+        cpu_manager.cpp
+        linux_proc.hpp
+        linux_proc.cpp
+        manager_base.hpp
+        pid_manager.hpp
+        pid_manager.cpp
+        utils.hpp
+        utils.cpp
+)

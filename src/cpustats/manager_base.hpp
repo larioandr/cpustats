@@ -6,15 +6,8 @@
 
 class Manager {
 public:
-    struct Col {
-        std::string title{};
-        int max_width{};
-    };
-
-    virtual const std::vector<std::string>& columns() = 0;
-
     virtual void Init() = 0;
-    virtual void Act() = 0;
+    virtual void Update() = 0;
     virtual void Finish() = 0;
 };
 

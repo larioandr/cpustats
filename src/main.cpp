@@ -1,22 +1,23 @@
-#include <numeric>
-#include <iostream>
-#include <fstream>
-#include <thread>
-#include <chrono>
-#include <vector>
-#include <set>
-#include <cstring>
-#include <unistd.h>
-#include <iomanip>
+#include "cpustats/cpu_manager.hpp"
+#include "cpustats/pid_manager.hpp"
+#include "cpustats/table.hpp"
 
 #include <cxxopts.hpp>
 #include <date.h>
-#include <fmt/format.h>
 
-#include "cpus.hpp"
-#include "pids.hpp"
+#include <chrono>
+#include <condition_variable>
+#include <csignal>
+#include <iostream>
+#include <thread>
+#include <vector>
 
 using namespace std::chrono_literals;
+
+// ---- Global state -----
+std::mutex should_stop_m{};
+std::condition_variable should_stop_cv{};
+bool should_stop{};
 
 
 struct Settings {
@@ -96,6 +97,32 @@ void PrintHelp(const cxxopts::Options& options) {
     std::cout << options.help() << std::endl;
 }
 
+
+void MainLoop(int interval_ms, std::vector<std::shared_ptr<Manager>> const& managers_list) {
+    while (true) {
+        std::unique_lock lock{should_stop_m};
+        should_stop_cv.wait_for(
+                lock,
+                std::chrono::milliseconds(interval_ms),
+                [](){ return should_stop; });
+        if (should_stop) {
+            break;
+        }
+        for (auto const& manager: managers_list) {
+            manager->Update();
+        }
+    }
+}
+
+
+void HandleSignal(int signo) {
+    if (signo == SIGINT || signo == SIGTERM) {
+        std::lock_guard lock{should_stop_m};
+        should_stop = true;
+        should_stop_cv.notify_all();
+    }
+}
+
 template <class Precision>
 std::string GetISOCurrentTime()
 {
@@ -104,9 +131,6 @@ std::string GetISOCurrentTime()
 }
 
 int main(int argc, char **argv) {
-    // cxxopts::Options options(
-    //     "cpu_stats", 
-    //     "Measure CPU utilization and track CPU to thread assignments")
     auto options = BuildOptions();
     auto parsed = options.parse(argc, argv);
     if (parsed.count("help")) {
@@ -116,105 +140,148 @@ int main(int argc, char **argv) {
     auto settings = BuildSettings(parsed);
     std::cout << settings.String();
 
-    size_t n_cpus = GetCpusCount();
-    std::vector<CpuStat> cpus1{};
-    std::vector<CpuStat> cpus2{};
-    std::vector<CpuStat> cpus_diff{};
-    std::vector<CpuStat> *curr_cpus = &cpus1;
-    std::vector<CpuStat> *prev_cpus = &cpus2;
+    std::vector<std::shared_ptr<Manager>> managers{};
 
-    {
-        std::cout << fmt::format("{:<13}|", "Time");
-        if (!settings.pids.empty()) {
-            std::cout << fmt::format("{:^12}|", "PID");
+    /* Create managers, acceptors and bind them */
+    auto table = std::make_shared<Table>();
+
+    auto cpu_manager = std::make_shared<CpuManager>();
+    cpu_manager->add_acceptor(dynamic_pointer_cast<CpuInfoAcceptor>(table));
+    cpu_manager->add_acceptor(dynamic_pointer_cast<CpuUtilAcceptor>(table));
+    managers.push_back(cpu_manager);
+
+    std::shared_ptr<PidManager> pid_manager{};
+    if (!settings.pids.empty()) {
+        pid_manager = std::make_shared<PidManager>();
+        pid_manager->add_acceptor(table);
+        for (auto pid: settings.pids) {
+            pid_manager->add_pid(pid);
         }
-        for (int i = 0; i < n_cpus; i++) {
-            std::cout << fmt::format("{:^8}|", fmt::format("cpu{}", i));
-        }
-        if (!settings.pids.empty()) {
-            std::cout << fmt::format("{:<12}", " Status");
-        }
-        std::cout << std::endl;
+        managers.push_back(pid_manager);
+    }
+
+    /* Initialize managers */
+    for (auto const& manager: managers) {
+        manager->Init();
+    }
+
+    /* Setup signal handlers */
+    std::signal(SIGINT, HandleSignal);
+    std::signal(SIGTERM, HandleSignal);
+
+    /* Start a worker thread */
+    std::thread worker{[settings, &managers](){
+        MainLoop(settings.interval_ms, managers);
+    }};
+
+    /* Wait for worker to finish */
+    worker.join();
+
+    for (auto const& manager: managers) {
+        manager->Finish();
     }
 
 
-    cpus1.resize(n_cpus);
-    cpus2.resize(n_cpus);
-    cpus_diff.resize(n_cpus);
 
-    std::vector<ProcStats> proc_stats_list{};
-    for (auto pid: settings.pids) {
-        proc_stats_list.push_back({.pid=pid});
-    }
-    
-    ReadStats(*curr_cpus);
-    std::vector<std::vector<double>> util_list{};
-
-    while (true) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(settings.interval_ms));
-
-        if (settings.use_cpu_stats) {
-            std::swap(curr_cpus, prev_cpus);
-            ReadStats(*curr_cpus);
-            util_list.emplace_back();
-            util_list.back().resize(n_cpus);
-            for (size_t i = 0; i < n_cpus; i++) {
-                CpuStat &cpu = cpus_diff[i];
-                Subtract((*curr_cpus)[i], (*prev_cpus)[i], cpu);
-                int total = std::accumulate(cpu.values.begin(), cpu.values.end(), 0);
-                int not_idle = total - *cpu.idle();
-                util_list.back()[i] = static_cast<double>(not_idle) / total;
-            }
-        }
-
-        for (auto& proc_stats: proc_stats_list) {
-            ReadProcStats(proc_stats.pid, proc_stats);
-        }
-
-        std::cout << fmt::format("{:<13}|", GetISOCurrentTime<std::chrono::milliseconds>());
-
-        bool first_line{true};
-        if (!settings.pids.empty()) {
-            std::cout << fmt::format("{:<12}|", " ");
-        }
-        if (settings.use_cpu_stats) {
-            for (size_t i = 0; i < n_cpus; i++) {
-                double val = (util_list.back()[i] * 100.0);
-                std::cout << fmt::format("{:>6.2f}% |", val);
-            }
-            first_line = false;
-            std::cout << std::endl;
-        }
-        for (const auto& proc_stats: proc_stats_list) {
-            if (!first_line) {
-                std::cout << fmt::format("{:<13}|", " ");  // Skip timestamp for 2nd line and all the rest
-            }
-            std::cout << fmt::format("{:^12}|", proc_stats.pid);
-            if (proc_stats.state != ProcStats::State::not_found) {
-                if (proc_stats.cpu >= n_cpus) {
-                    std::cerr << "Warning: bad CPU number " << proc_stats.cpu << std::endl;
-                } else {
-                    // Skip (I-1) cells
-                    for (int i = 0; i < proc_stats.cpu; i++) {
-                        std::cout << fmt::format("{:<8}|", " ");
-                    }
-                    std::cout << fmt::format("{:^8c}|", 'x');
-                    for (int i = proc_stats.cpu + 1; i < n_cpus; i++) {
-                        std::cout << fmt::format("{:<8}|", " ");
-                    }
-                    std::cout << " " << ToString(proc_stats.state) << std::endl;
-                }
-            } else {
-                // Skip all CPUs columns
-                for (int i = 0; i < n_cpus; i++) {
-                    std::cout << fmt::format("{:<8}|", " ");
-                }
-                std::cout << " " << ToString(proc_stats.state) << std::endl;
-            }
-            first_line = false;
-        }
-        if (first_line) {
-            std::cout << std::endl;
-        }
-    }
+    //    size_t n_cpus = GetCpusCount();
+//    std::vector<CpuStat> cpus1{};
+//    std::vector<CpuStat> cpus2{};
+//    std::vector<CpuStat> cpus_diff{};
+//    std::vector<CpuStat> *curr_cpus = &cpus1;
+//    std::vector<CpuStat> *prev_cpus = &cpus2;
+//
+//    {
+//        std::cout << fmt::format("{:<13}|", "Time");
+//        if (!settings.pids.empty()) {
+//            std::cout << fmt::format("{:^12}|", "PID");
+//        }
+//        for (int i = 0; i < n_cpus; i++) {
+//            std::cout << fmt::format("{:^8}|", fmt::format("cpu{}", i));
+//        }
+//        if (!settings.pids.empty()) {
+//            std::cout << fmt::format("{:<12}", " Status");
+//        }
+//        std::cout << std::endl;
+//    }
+//
+//
+//    cpus1.resize(n_cpus);
+//    cpus2.resize(n_cpus);
+//    cpus_diff.resize(n_cpus);
+//
+//    std::vector<ProcStats> proc_stats_list{};
+//    for (auto pid: settings.pids) {
+//        proc_stats_list.push_back({.pid=pid});
+//    }
+//
+//    ReadStats(*curr_cpus);
+//    std::vector<std::vector<double>> util_list{};
+//
+//    while (true) {
+//        std::this_thread::sleep_for(std::chrono::milliseconds(settings.interval_ms));
+//
+//        if (settings.use_cpu_stats) {
+//            std::swap(curr_cpus, prev_cpus);
+//            ReadStats(*curr_cpus);
+//            util_list.emplace_back();
+//            util_list.back().resize(n_cpus);
+//            for (size_t i = 0; i < n_cpus; i++) {
+//                CpuStat &cpu = cpus_diff[i];
+//                Subtract((*curr_cpus)[i], (*prev_cpus)[i], cpu);
+//                int total = std::accumulate(cpu.values.begin(), cpu.values.end(), 0);
+//                int not_idle = total - *cpu.idle();
+//                util_list.back()[i] = static_cast<double>(not_idle) / total;
+//            }
+//        }
+//
+//        for (auto& proc_stats: proc_stats_list) {
+//            ReadProcStats(proc_stats.pid, proc_stats);
+//        }
+//
+//        std::cout << fmt::format("{:<13}|", GetISOCurrentTime<std::chrono::milliseconds>());
+//
+//        bool first_line{true};
+//        if (!settings.pids.empty()) {
+//            std::cout << fmt::format("{:<12}|", " ");
+//        }
+//        if (settings.use_cpu_stats) {
+//            for (size_t i = 0; i < n_cpus; i++) {
+//                double val = (util_list.back()[i] * 100.0);
+//                std::cout << fmt::format("{:>6.2f}% |", val);
+//            }
+//            first_line = false;
+//            std::cout << std::endl;
+//        }
+//        for (const auto& proc_stats: proc_stats_list) {
+//            if (!first_line) {
+//                std::cout << fmt::format("{:<13}|", " ");  // Skip timestamp for 2nd line and all the rest
+//            }
+//            std::cout << fmt::format("{:^12}|", proc_stats.pid);
+//            if (proc_stats.state != ProcStats::State::not_found) {
+//                if (proc_stats.cpu >= n_cpus) {
+//                    std::cerr << "Warning: bad CPU number " << proc_stats.cpu << std::endl;
+//                } else {
+//                    // Skip (I-1) cells
+//                    for (int i = 0; i < proc_stats.cpu; i++) {
+//                        std::cout << fmt::format("{:<8}|", " ");
+//                    }
+//                    std::cout << fmt::format("{:^8c}|", 'x');
+//                    for (int i = proc_stats.cpu + 1; i < n_cpus; i++) {
+//                        std::cout << fmt::format("{:<8}|", " ");
+//                    }
+//                    std::cout << " " << ToString(proc_stats.state) << std::endl;
+//                }
+//            } else {
+//                // Skip all CPUs columns
+//                for (int i = 0; i < n_cpus; i++) {
+//                    std::cout << fmt::format("{:<8}|", " ");
+//                }
+//                std::cout << " " << ToString(proc_stats.state) << std::endl;
+//            }
+//            first_line = false;
+//        }
+//        if (first_line) {
+//            std::cout << std::endl;
+//        }
+//    }
 }
