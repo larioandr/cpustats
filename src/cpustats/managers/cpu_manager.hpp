@@ -8,7 +8,7 @@
 #include <iostream>
 
 #include "manager_base.hpp"
-#include "linux_proc.hpp"
+#include "../system/linux_proc.hpp"
 
 
 class CpuStatAcceptor {

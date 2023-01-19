@@ -1,4 +1,4 @@
-#include "utils.hpp"
+#include "strings.hpp"
 #include <cctype>
 
 const char *ToNextWord(const char *s, int cnt) {

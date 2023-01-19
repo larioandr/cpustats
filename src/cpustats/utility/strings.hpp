@@ -1,5 +1,5 @@
-#ifndef CPUSTATS_UTILS_HPP
-#define CPUSTATS_UTILS_HPP
+#ifndef CPUSTATS_STRINGS_HPP
+#define CPUSTATS_STRINGS_HPP
 
 #include <array>
 #include <string>
@@ -34,4 +34,4 @@ void Subtract(std::array<T, k> const& curr, std::array<T, k> const& prev, std::a
     }
 }
 
-#endif //CPUSTATS_UTILS_HPP
+#endif //CPUSTATS_STRINGS_HPP

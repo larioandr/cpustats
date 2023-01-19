@@ -1,5 +1,5 @@
 #include "cpu_manager.hpp"
-#include "utils.hpp"
+#include "../utility/strings.hpp"
 #include <numeric>
 #include <cassert>
 #include <cstring>
@@ -17,10 +17,10 @@ void CpuManager::Init() {
     }
     ReadProcStat(*curr_cpu_stat_list_);
 
-    // Inform CPU-Info acceptors about cpus (only here in Init())
+    // Inform CPU-Info consumers about cpus (only here in Init())
     CallAcceptors(cpu_info_acceptors_, cpu_info_list_.begin(), cpu_info_list_.end());
 
-    // Inform CPU-Stat acceptors about current stats (also during updates)
+    // Inform CPU-Stat consumers about current stats (also during updates)
     CallAcceptors(cpu_stat_acceptors_, curr_cpu_stat_list_->begin(), curr_cpu_stat_list_->end());
 }
 

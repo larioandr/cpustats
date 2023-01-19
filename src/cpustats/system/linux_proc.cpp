@@ -1,5 +1,5 @@
 #include "linux_proc.hpp"
-#include "utils.hpp"
+#include "../utility/strings.hpp"
 
 #include <fmt/format.h>
 
@@ -9,6 +9,10 @@
 #include <string>
 
 namespace fs = std::filesystem;
+
+int GetCpuCount() {
+    return static_cast<int>(LoadProcCpuInfo().size());
+}
 
 std::vector<CpuInfo> LoadProcCpuInfo() {
     std::ifstream ifs;

@@ -1,6 +1,6 @@
-#include "cpustats/cpu_manager.hpp"
-#include "cpustats/pid_manager.hpp"
-#include "cpustats/table.hpp"
+#include "cpustats/managers/cpu_manager.hpp"
+#include "cpustats/managers/pid_manager.hpp"
+#include "cpustats/consumers/table.hpp"
 
 #include <cxxopts.hpp>
 #include <date.h>
@@ -98,20 +98,25 @@ void PrintHelp(const cxxopts::Options& options) {
 }
 
 
-void MainLoop(int interval_ms, std::vector<std::shared_ptr<Manager>> const& managers_list) {
+void MainLoop(
+        int interval_ms,
+        std::vector<std::shared_ptr<Manager>> const& managers_list,
+        std::vector<std::shared_ptr<Consumer>> const& consumers_list
+) {
+    for (auto const& consumer: consumers_list) consumer->Start();
     while (true) {
-        std::unique_lock lock{should_stop_m};
-        should_stop_cv.wait_for(
-                lock,
-                std::chrono::milliseconds(interval_ms),
-                [](){ return should_stop; });
-        if (should_stop) {
-            break;
+        {
+            std::unique_lock lock{should_stop_m};
+            should_stop_cv.wait_for(
+                    lock, std::chrono::milliseconds(interval_ms),
+                    []() { return should_stop; });
+            if (should_stop) break;
         }
-        for (auto const& manager: managers_list) {
-            manager->Update();
-        }
+        for (auto const& consumer: consumers_list) consumer->BeginIter();
+        for (auto const& manager: managers_list) manager->Update();
+        for (auto const& consumer: consumers_list) consumer->EndIter();
     }
+    for (auto const& consumer: consumers_list) consumer->Finish();
 }
 
 
@@ -141,9 +146,17 @@ int main(int argc, char **argv) {
     std::cout << settings.String();
 
     std::vector<std::shared_ptr<Manager>> managers{};
+    std::vector<std::shared_ptr<Consumer>> consumers{};
 
-    /* Create managers, acceptors and bind them */
-    auto table = std::make_shared<Table>();
+    /* Create managers, consumers and bind them */
+    Table::Settings table_props{};
+    table_props.show_cpu_stats = true;
+    table_props.show_pid_stats = !settings.pids.empty();
+    table_props.num_cpus = GetCpuCount();
+    table_props.show_outer_delims = true;
+    table_props.show_heading = true;
+    auto table = std::make_shared<Table>(table_props);
+    consumers.push_back(table);
 
     auto cpu_manager = std::make_shared<CpuManager>();
     cpu_manager->add_acceptor(dynamic_pointer_cast<CpuInfoAcceptor>(table));
@@ -170,8 +183,8 @@ int main(int argc, char **argv) {
     std::signal(SIGTERM, HandleSignal);
 
     /* Start a worker thread */
-    std::thread worker{[settings, &managers](){
-        MainLoop(settings.interval_ms, managers);
+    std::thread worker{[settings, &managers, &consumers](){
+        MainLoop(settings.interval_ms, managers, consumers);
     }};
 
     /* Wait for worker to finish */

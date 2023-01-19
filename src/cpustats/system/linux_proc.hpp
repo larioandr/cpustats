@@ -52,6 +52,7 @@ struct PidStat {
 };
 
 
+int GetCpuCount();
 std::vector<CpuInfo> LoadProcCpuInfo();
 void ReadProcStat(std::vector<CpuStat>& cpus);
 void ReadProcPidStat(int pid, PidStat& stat);

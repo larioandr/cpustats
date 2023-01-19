@@ -2,7 +2,7 @@
 #define CPUSTATS_PID_MANAGER_HPP
 
 #include "manager_base.hpp"
-#include "linux_proc.hpp"
+#include "../system/linux_proc.hpp"
 
 #include <memory>
 
