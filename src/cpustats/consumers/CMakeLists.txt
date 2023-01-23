@@ -2,6 +2,8 @@ target_sources(
         cpustatslib
         PRIVATE
         consumer_base.hpp
+        csv_output.hpp
+        csv_output.cpp
         table.hpp
         table.cpp
 )

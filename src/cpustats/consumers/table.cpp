@@ -25,7 +25,7 @@ Table::Table(const Settings &settings)
     }
 }
 
-void Table::Start() {
+bool Table::Start() {
     if (settings_.show_heading) {
         for (int i{}; i < static_cast<int>(columns_.size()); i++) {
             auto const& col = columns_.at(i);
@@ -37,6 +37,7 @@ void Table::Start() {
             PrintDivider();
         }
     }
+    return true;
 }
 
 void Table::BeginIter() {

@@ -39,7 +39,7 @@ public:
 
     Settings const& settings() const { return settings_; }
 
-    void Start() override;
+    bool Start() override;
     void BeginIter() override;
     void EndIter() override;
     void Finish() override;

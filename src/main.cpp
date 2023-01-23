@@ -1,6 +1,7 @@
 #include "cpustats/managers/cpu_manager.hpp"
 #include "cpustats/managers/pid_manager.hpp"
 #include "cpustats/consumers/table.hpp"
+#include "cpustats/consumers/csv_output.hpp"
 
 #include <cxxopts.hpp>
 #include <date.h>
@@ -147,20 +148,29 @@ int main(int argc, char **argv) {
 
     std::vector<std::shared_ptr<Manager>> managers{};
     std::vector<std::shared_ptr<Consumer>> consumers{};
+    int num_cpus = GetCpuCount();
 
     /* Create managers, consumers and bind them */
     Table::Settings table_props{};
     table_props.show_cpu_stats = true;
     table_props.show_pid_stats = !settings.pids.empty();
-    table_props.num_cpus = GetCpuCount();
+    table_props.num_cpus = num_cpus;
     table_props.show_outer_delims = true;
     table_props.show_heading = true;
     auto table = std::make_shared<Table>(table_props);
     consumers.push_back(table);
 
+    CpuUtilCsvWriter::Settings cpu_util_csv_props{};
+    cpu_util_csv_props.file_name = "/tmp/cpu_util.csv";
+    cpu_util_csv_props.write_header = true;
+    cpu_util_csv_props.num_cpus = num_cpus;
+    auto cpu_util_csv = std::make_shared<CpuUtilCsvWriter>(cpu_util_csv_props);
+    consumers.push_back(cpu_util_csv);
+
     auto cpu_manager = std::make_shared<CpuManager>();
     cpu_manager->add_acceptor(dynamic_pointer_cast<CpuInfoAcceptor>(table));
     cpu_manager->add_acceptor(dynamic_pointer_cast<CpuUtilAcceptor>(table));
+    cpu_manager->add_acceptor(cpu_util_csv);
     managers.push_back(cpu_manager);
 
     std::shared_ptr<PidManager> pid_manager{};

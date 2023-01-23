@@ -5,7 +5,7 @@ class Consumer {
 public:
     virtual ~Consumer() = default;
 
-    virtual void Start() = 0;
+    virtual bool Start() = 0;
     virtual void BeginIter() = 0;
     virtual void EndIter() = 0;
     virtual void Finish() = 0;
