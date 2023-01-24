@@ -33,6 +33,7 @@ public:
         bool show_divider{true};
         bool show_outer_delims{false};
         int num_cpus{};
+        bool normalize_cpu_utility{false};
     };
 
     explicit Table(Settings const& settings);

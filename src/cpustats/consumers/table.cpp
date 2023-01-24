@@ -63,7 +63,12 @@ void Table::Accept(CpuInfo const& value, bool last_in_cycle) {
 void Table::Accept(CpuUtil const& value, bool last_in_cycle) {
     if (!settings_.show_cpu_stats) return;
     auto const& col = cpu_col(value.cpu);
-    auto s_val = fmt::format("{:>6.2f}%", value.busy_rate * 100.0);
+    std::string s_val;
+    if (settings_.normalize_cpu_utility) {
+        s_val = fmt::format("{:>7.5f}", value.busy_rate);
+    } else {
+        s_val = fmt::format("{:>6.2f}%", value.busy_rate * 100.0);
+    }
     row_[col.index].value = fmt::format("{:^{}s}", s_val, col.width);
     empty_row_ = false;
     if (last_in_cycle) {

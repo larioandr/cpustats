@@ -7,18 +7,31 @@
 
 #include <chrono>
 #include <fstream>
+#include <iostream>
 #include <optional>
 
-class CpuUtilCsvWriter : public Consumer, public CpuUtilAcceptor {
+class CsvWriterBase {
 public:
-    struct Settings {
-        std::string file_name;
-        int num_cpus{1};
-        char delim{';'};
-        bool write_header{true};
-    };
+    void set_stream(std::ofstream&& stream);
+    void set_stream(std::ostream& stream);
+    void set_delim(char delim);
+    void enable_header(bool enabled);
 
-    explicit CpuUtilCsvWriter(Settings const& settings);
+    std::ostream& stream() const { return *stream_; }
+    char delim() const { return delim_; }
+    bool is_header_enabled() const { return header_enabled_; }
+
+private:
+    std::optional<std::ofstream> stored_ofstream_{};
+    std::ostream *stream_{&std::cout};
+    char delim_{';'};
+    bool header_enabled_{true};
+};
+
+class CpuUtilCsvWriter : public CsvWriterBase, public Consumer, public CpuUtilAcceptor {
+public:
+    void set_num_cpus(int num_cpus);
+    void set_normalize_cpu_utility(bool enabled) { normalize_cpu_utility_ = enabled; }
 
     bool Start() override;
     void BeginIter() override;
@@ -27,19 +40,22 @@ public:
 
     void Accept(CpuUtil const& value, bool last_in_cycle = false) override;
 private:
-    Settings settings_{};
+    bool normalize_cpu_utility_{false};
     std::string iter_start_timestamp_{};
-    std::ofstream stream_{};
     std::vector<std::optional<double>> cpu_list_{};
 };
 
 
-class PidCpuCsvWriter : public Consumer, public PidStatAcceptor {
+class PidCpuCsvWriter : public CsvWriterBase, public Consumer, public PidStatAcceptor {
 public:
-    struct Settings {
-        std::string file_name;
-        char delim{';'};
-    };
+    bool Start() override;
+    void BeginIter() override;
+    void EndIter() override;
+    void Finish() override;
+
+    void Accept(PidStat const& value, bool last_in_cycle = false) override;
+private:
+    std::string iter_start_timestamp_{};
 };
 
 #endif //CPUSTATS_CSV_OUTPUT_HPP

@@ -27,6 +27,8 @@ struct Settings {
     std::string cpu_stats_file_name{};
     std::string pid_stats_file_name{};
     int interval_ms{1'000};
+    bool all_pids{false};
+    bool normalize_cpu_utility{false};
 
     [[nodiscard]] std::string String() const {
         std::stringstream ss;
@@ -54,14 +56,16 @@ cxxopts::Options BuildOptions() {
             ("i,interval", "Interval between measurements in milliseconds", cxxopts::value<int>()->default_value("1000"))
             ("no-cpu", "Do not record CPU stats", cxxopts::value<bool>()->default_value("false"))
             ("p,pid", "Track CPUs assigned to process or thread with PID",cxxopts::value<std::vector<int>>())
+            ("P,all-pids", "Track CPUs assigned to all processes or threads", cxxopts::value<bool>()->default_value("false"))
             ("f,file", "Base name for CSV files where to record results", cxxopts::value<std::string>()->default_value(""))
             ("cpu-file", "CSV file name to record CPU stats", cxxopts::value<std::string>()->default_value(""))
             ("pid-file", "CSV file name to record PID stats", cxxopts::value<std::string>()->default_value(""))
+            ("ncu,normalize-cpu-utility", "Write CPU load in normal form, 0 <= utility <= 1, instead of percents",
+                    cxxopts::value<bool>()->default_value("false"))
             ("h,help", "Print usage")
             ;
     return options;
 }
-
 
 Settings BuildSettings(const cxxopts::ParseResult& args) {
     Settings settings{};
@@ -78,6 +82,9 @@ Settings BuildSettings(const cxxopts::ParseResult& args) {
             settings.pids.push_back(pid);
         }
     }
+    if (args.count("all-pids")) {
+        settings.all_pids = true;
+    }
     if (args.count("file")) {
         auto file_name = args["file"].as<std::string>();
         if (!file_name.empty()) {
@@ -90,6 +97,9 @@ Settings BuildSettings(const cxxopts::ParseResult& args) {
     }
     if (args.count("pid-file")) {
         settings.pid_stats_file_name = args["pid-file"].as<std::string>();
+    }
+    if (args.count("normalize-cpu-utility")) {
+        settings.normalize_cpu_utility = true;
     }
     return settings;
 }
@@ -129,13 +139,6 @@ void HandleSignal(int signo) {
     }
 }
 
-template <class Precision>
-std::string GetISOCurrentTime()
-{
-    auto now = std::chrono::system_clock::now();
-    return date::format("%T", date::floor<Precision>(now));
-}
-
 int main(int argc, char **argv) {
     auto options = BuildOptions();
     auto parsed = options.parse(argc, argv);
@@ -150,37 +153,68 @@ int main(int argc, char **argv) {
     std::vector<std::shared_ptr<Consumer>> consumers{};
     int num_cpus = GetCpuCount();
 
-    /* Create managers, consumers and bind them */
-    Table::Settings table_props{};
-    table_props.show_cpu_stats = true;
-    table_props.show_pid_stats = !settings.pids.empty();
-    table_props.num_cpus = num_cpus;
-    table_props.show_outer_delims = true;
-    table_props.show_heading = true;
-    auto table = std::make_shared<Table>(table_props);
-    consumers.push_back(table);
-
-    CpuUtilCsvWriter::Settings cpu_util_csv_props{};
-    cpu_util_csv_props.file_name = "/tmp/cpu_util.csv";
-    cpu_util_csv_props.write_header = true;
-    cpu_util_csv_props.num_cpus = num_cpus;
-    auto cpu_util_csv = std::make_shared<CpuUtilCsvWriter>(cpu_util_csv_props);
-    consumers.push_back(cpu_util_csv);
-
+    /*
+     * Create managers
+     */
     auto cpu_manager = std::make_shared<CpuManager>();
-    cpu_manager->add_acceptor(dynamic_pointer_cast<CpuInfoAcceptor>(table));
-    cpu_manager->add_acceptor(dynamic_pointer_cast<CpuUtilAcceptor>(table));
-    cpu_manager->add_acceptor(cpu_util_csv);
     managers.push_back(cpu_manager);
 
     std::shared_ptr<PidManager> pid_manager{};
-    if (!settings.pids.empty()) {
+    if (!settings.pids.empty() || settings.all_pids) {
         pid_manager = std::make_shared<PidManager>();
-        pid_manager->add_acceptor(table);
         for (auto pid: settings.pids) {
             pid_manager->add_pid(pid);
         }
+        if (settings.all_pids) {
+            pid_manager->set_track_all(true);
+        }
         managers.push_back(pid_manager);
+    }
+
+    /* Create consumers */
+    // 1) Table
+    Table::Settings table_props{};
+    table_props.show_cpu_stats = true;
+    table_props.show_pid_stats = !settings.pids.empty() || settings.all_pids;
+    table_props.num_cpus = num_cpus;
+    table_props.show_outer_delims = true;
+    table_props.show_heading = true;
+    table_props.show_divider = false;
+    table_props.normalize_cpu_utility = settings.normalize_cpu_utility;
+    auto table = std::make_shared<Table>(table_props);
+    consumers.push_back(table);
+
+    // 2) CPU utility CSV
+    std::shared_ptr<CpuUtilCsvWriter> cpu_util_csv{};
+    if (!settings.cpu_stats_file_name.empty()) {
+        cpu_util_csv = std::make_shared<CpuUtilCsvWriter>();
+        cpu_util_csv->set_stream(std::ofstream(settings.cpu_stats_file_name, std::ios::out));
+        cpu_util_csv->enable_header(true);
+        cpu_util_csv->set_num_cpus(num_cpus);
+        cpu_util_csv->set_normalize_cpu_utility(settings.normalize_cpu_utility);
+        consumers.push_back(cpu_util_csv);
+    }
+
+    // 3) PID CPU CSV
+    std::shared_ptr<PidCpuCsvWriter> pid_cpu_csv{};
+    if (!settings.pid_stats_file_name.empty()) {
+        pid_cpu_csv = std::make_shared<PidCpuCsvWriter>();
+        pid_cpu_csv->set_stream(std::ofstream{settings.pid_stats_file_name, std::ios::out});
+        pid_cpu_csv->enable_header(true);
+        consumers.push_back(pid_cpu_csv);
+    }
+
+    /* Bind consumers to managers */
+    cpu_manager->add_acceptor(dynamic_pointer_cast<CpuInfoAcceptor>(table));
+    cpu_manager->add_acceptor(dynamic_pointer_cast<CpuUtilAcceptor>(table));
+    if (cpu_util_csv) {
+        cpu_manager->add_acceptor(cpu_util_csv);
+    }
+    if (pid_manager) {
+        pid_manager->add_acceptor(table);
+        if (pid_cpu_csv) {
+            pid_manager->add_acceptor(pid_cpu_csv);
+        }
     }
 
     /* Initialize managers */
@@ -203,108 +237,4 @@ int main(int argc, char **argv) {
     for (auto const& manager: managers) {
         manager->Finish();
     }
-
-
-
-    //    size_t n_cpus = GetCpusCount();
-//    std::vector<CpuStat> cpus1{};
-//    std::vector<CpuStat> cpus2{};
-//    std::vector<CpuStat> cpus_diff{};
-//    std::vector<CpuStat> *curr_cpus = &cpus1;
-//    std::vector<CpuStat> *prev_cpus = &cpus2;
-//
-//    {
-//        std::cout << fmt::format("{:<13}|", "Time");
-//        if (!settings.pids.empty()) {
-//            std::cout << fmt::format("{:^12}|", "PID");
-//        }
-//        for (int i = 0; i < n_cpus; i++) {
-//            std::cout << fmt::format("{:^8}|", fmt::format("cpu{}", i));
-//        }
-//        if (!settings.pids.empty()) {
-//            std::cout << fmt::format("{:<12}", " Status");
-//        }
-//        std::cout << std::endl;
-//    }
-//
-//
-//    cpus1.resize(n_cpus);
-//    cpus2.resize(n_cpus);
-//    cpus_diff.resize(n_cpus);
-//
-//    std::vector<ProcStats> proc_stats_list{};
-//    for (auto pid: settings.pids) {
-//        proc_stats_list.push_back({.pid=pid});
-//    }
-//
-//    ReadStats(*curr_cpus);
-//    std::vector<std::vector<double>> util_list{};
-//
-//    while (true) {
-//        std::this_thread::sleep_for(std::chrono::milliseconds(settings.interval_ms));
-//
-//        if (settings.use_cpu_stats) {
-//            std::swap(curr_cpus, prev_cpus);
-//            ReadStats(*curr_cpus);
-//            util_list.emplace_back();
-//            util_list.back().resize(n_cpus);
-//            for (size_t i = 0; i < n_cpus; i++) {
-//                CpuStat &cpu = cpus_diff[i];
-//                Subtract((*curr_cpus)[i], (*prev_cpus)[i], cpu);
-//                int total = std::accumulate(cpu.values.begin(), cpu.values.end(), 0);
-//                int not_idle = total - *cpu.idle();
-//                util_list.back()[i] = static_cast<double>(not_idle) / total;
-//            }
-//        }
-//
-//        for (auto& proc_stats: proc_stats_list) {
-//            ReadProcStats(proc_stats.pid, proc_stats);
-//        }
-//
-//        std::cout << fmt::format("{:<13}|", GetISOCurrentTime<std::chrono::milliseconds>());
-//
-//        bool first_line{true};
-//        if (!settings.pids.empty()) {
-//            std::cout << fmt::format("{:<12}|", " ");
-//        }
-//        if (settings.use_cpu_stats) {
-//            for (size_t i = 0; i < n_cpus; i++) {
-//                double val = (util_list.back()[i] * 100.0);
-//                std::cout << fmt::format("{:>6.2f}% |", val);
-//            }
-//            first_line = false;
-//            std::cout << std::endl;
-//        }
-//        for (const auto& proc_stats: proc_stats_list) {
-//            if (!first_line) {
-//                std::cout << fmt::format("{:<13}|", " ");  // Skip timestamp for 2nd line and all the rest
-//            }
-//            std::cout << fmt::format("{:^12}|", proc_stats.pid);
-//            if (proc_stats.state != ProcStats::State::not_found) {
-//                if (proc_stats.cpu >= n_cpus) {
-//                    std::cerr << "Warning: bad CPU number " << proc_stats.cpu << std::endl;
-//                } else {
-//                    // Skip (I-1) cells
-//                    for (int i = 0; i < proc_stats.cpu; i++) {
-//                        std::cout << fmt::format("{:<8}|", " ");
-//                    }
-//                    std::cout << fmt::format("{:^8c}|", 'x');
-//                    for (int i = proc_stats.cpu + 1; i < n_cpus; i++) {
-//                        std::cout << fmt::format("{:<8}|", " ");
-//                    }
-//                    std::cout << " " << ToString(proc_stats.state) << std::endl;
-//                }
-//            } else {
-//                // Skip all CPUs columns
-//                for (int i = 0; i < n_cpus; i++) {
-//                    std::cout << fmt::format("{:<8}|", " ");
-//                }
-//                std::cout << " " << ToString(proc_stats.state) << std::endl;
-//            }
-//            first_line = false;
-//        }
-//        if (first_line) {
-//            std::cout << std::endl;
-//        }
-//    }
 }
