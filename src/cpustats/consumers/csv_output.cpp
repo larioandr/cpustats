@@ -40,6 +40,7 @@ bool CpuUtilCsvWriter::Start() {
         stream() << "timestamp";
         for (int i{}; i < cpu_list_.size(); i++)
             stream() << delim() << fmt::format("cpu{}", i);
+        stream() << std::endl;
     }
     return true;
 }
