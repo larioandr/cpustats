@@ -18,12 +18,20 @@ should_stop: [bool] = [False]
 def launch_fib(
         cwd: Path,
         order: int = 20,
-        num_threads: int = 4
+        num_threads: int = 4,
+        cpus: (int, ...) = ()
 ) -> subprocess.Popen[str] | None:
-    fib_path = cwd / 'fib'
+    args = [cwd / 'fib', str(order), str(num_threads)]
+    if cpus:
+        args = [
+            "taskset", 
+            "--cpu-list", 
+            ','.join(str(c) for c in cpus)
+        ]  + args
+    print("* launching fib with args:\n" + " ".join([str(arg) for arg in args]))
     try:
         return subprocess.Popen(
-            [fib_path, str(order), str(num_threads)],
+            args,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
         )
@@ -119,9 +127,15 @@ def poll_processes(processes_list: [subprocess.Popen, ...]):
 @click.option('-P', '--path', type=str, show_default=True,
               help='Path to directory with fib and cpustats executables',
               default=Path('./build/bin').__str__())
-def cli(path, threads, number, pid_file, cpu_file, interval):
+@click.option('-c', '--cpu-list', type=str, show_default=True, default="",
+              help='Comma-separated list of CPUs to assign to workers (opt.)')
+def cli(cpu_list, path, threads, number, pid_file, cpu_file, interval):    
+    if cpu_list:
+        cpus = [int(cpu_s) for cpu_s in cpu_list.split(',')]
+    else:
+        cpus = []
     cwd = Path(path)
-    fib_proc = launch_fib(cwd, number, threads)
+    fib_proc = launch_fib(cwd, number, threads, cpus)
     if fib_proc is not None:
         thread_id_bytes = fib_proc.stdout\
             .readline()\

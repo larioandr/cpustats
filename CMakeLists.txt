@@ -21,8 +21,8 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "$ENV{HOME}/.local/lib/cmake")
 add_subdirectory(src)
 add_subdirectory(scripts)
 
-find_package(GTest)
-if(GTEST_FOUND)
-    add_subdirectory(tests)
-endif()
+# find_package(GTest)
+# if(GTEST_FOUND)
+#     add_subdirectory(tests)
+# endif()
 

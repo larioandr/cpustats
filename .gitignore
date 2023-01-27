@@ -3,3 +3,4 @@ cmake-build-*/
 .idea/
 venv/
 .venv/
+.vscode/
